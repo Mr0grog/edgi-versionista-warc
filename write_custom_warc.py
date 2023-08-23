@@ -1,3 +1,4 @@
+import hashlib
 from http import HTTPStatus
 import importlib.metadata
 from io import BytesIO
@@ -42,8 +43,10 @@ def create_version_records(warc, version):
                     if key.lower() not in BAD_HEADERS:
                         recorded_headers[key] = value
             http_headers = StatusAndHeaders(status_text(version['status']), recorded_headers.items(), protocol='HTTP/1.1')
+            body = httpx.get(version['body_url']).content
+            assert hashlib.sha256(body).hexdigest() == version['body_hash']
             # Note this needs to be an IO object, so if we have bytes, use io.BytesIO(bytes)
-            payload = BytesIO(httpx.get(version['body_url']).content)
+            payload = BytesIO(body)
         else:
             http_headers = StatusAndHeaders(status_text(302), (('Location', history[index + 1]),), protocol='HTTP/1.1')
             payload = None
@@ -66,6 +69,8 @@ def create_version_records(warc, version):
 with open(filename, 'wb') as fh:
     writer = WARCWriter(fh, gzip=False, warc_version='1.1')
 
+    # Lots more that should probably go here, see spec §10.1
+    # https://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1-annotated/#example-of-warcinfo-record
     record = writer.create_warcinfo_record(filename, {
         # Or `import pkg_resources; pkg_resources.get_distribution('warcio').version
         'software': f'warcio/{importlib.metadata.version("warcio")}',
