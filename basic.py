@@ -1,5 +1,6 @@
 from warcio.capture_http import capture_http
 from warcio import WARCWriter
+# Not installed, but httpx doesn't work with capture_http.
 import requests
 
 with open('example.warc', 'wb') as fh:
