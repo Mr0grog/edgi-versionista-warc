@@ -1,0 +1,27 @@
+[project]
+name = "versionista-warc"
+version = "0.1.0"
+description = "Build WARCs from Versionista data in EDGI DB"
+authors = [
+    { name = "Rob Brackett", email = "rob@robbrackett.com" }
+]
+dependencies = [
+    "warcio>=1.7.4",
+    "httpx>=0.24.1",
+]
+readme = "README.md"
+requires-python = ">= 3.8"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = [
+    "ipython>=8.12.2",
+    "setuptools>=68.1.2",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true

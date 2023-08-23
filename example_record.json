@@ -1,0 +1,37 @@
+{
+  "uuid": "46e32277-69b7-49d2-b660-72facd1593cc",
+  "page_uuid": "f91d0973-8244-4610-a208-5e85c921e2a6",
+  "capture_time": "2017-01-02T09:29:27.000Z",
+  "body_url": "https://edgi-wm-versionista.s3.amazonaws.com/versionista1/69957-5935292/version-9216356.html",
+  "body_hash": "0b77f3ecf273e456db9900731c670051900e95c269b5a01187b1597d4d9cd4be",
+  "source_type": "versionista",
+  "source_metadata": {
+    "url": "https://versionista.com/69957/5935292/9216356/",
+    "length": 31564,
+    "status": 200,
+    "account": "versionista1",
+    "page_id": "5935292",
+    "site_id": "69957",
+    "diff_hash": "f1c7291a041f90cf971c3ed4472d988b4716e697e06d0240fbae4977370aab15",
+    "last_date": "2017-01-02T09:29:27.000Z",
+    "load_time": 391,
+    "redirects": [
+      "https://www.epa.gov/climate-change-science"
+    ],
+    "version_id": "9216356",
+    "diff_length": 2529,
+    "has_content": true,
+    "content_type": "text/html",
+    "diff_with_first_url": "https://versionista.com/69957/5935292/9216356:8941211",
+    "diff_with_previous_url": "https://versionista.com/69957/5935292/9216356:9135231"
+  },
+  "created_at": "2017-05-09T05:44:50.702Z",
+  "updated_at": "2020-02-29T04:03:08.815Z",
+  "title": "Page being updated | US EPA",
+  "url": "https://www3.epa.gov/climatechange/science/",
+  "different": true,
+  "status": 200,
+  "content_length": 31564,
+  "media_type": "text/html",
+  "headers": null
+}
