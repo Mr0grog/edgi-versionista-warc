@@ -11,4 +11,5 @@ wheels/
 
 .DS_Store
 
-example.custom.warc
+*.warc
+*.warc.gz
