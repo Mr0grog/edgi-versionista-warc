@@ -1,4 +1,6 @@
 from collections import Counter
+from datetime import timezone
+import email.utils
 import hashlib
 from http import HTTPStatus
 import importlib.metadata
@@ -33,6 +35,20 @@ class MissingBodyError(BadDataError):
     reason = 'Body_never_saved'
 
 
+def format_datetime_http(time):
+    # email.utils does not support the UTC object dateutil uses, so fix it.
+    return email.utils.format_datetime(time.astimezone(timezone.utc), usegmt=True)
+
+
+def format_datetime_iso(time):
+    iso_time = time.isoformat()
+    # Use compact representation for UTC
+    if iso_time.endswith('+00:00'):
+        no_tz_date = iso_time.split("+", 1)[0]
+        iso_time = f'{no_tz_date}Z'
+    return iso_time
+
+
 def status_text(code):
     status = HTTPStatus(code)
     return f'{status.value} {status.phrase}'
@@ -54,6 +70,7 @@ def load_response_body(version):
 def create_version_records(warc, version):
     records = []
     version_id = version['uuid']
+    capture_time = version["capture_time"]
 
     if version['status'] is None:
         raise BadDataError(version_id, reason='Missing_status')
@@ -67,9 +84,8 @@ def create_version_records(warc, version):
 
     final_url = history[-1]
     for index, url in enumerate(history):
+        recorded_headers = { 'Date': format_datetime_http(capture_time) }
         if url == final_url:
-            # FIXME: set `Date` with email.utils.formatdate(timestamp, usegmt=True)
-            recorded_headers = {}
             if version['media_type']:
                 recorded_headers['Content-Type'] = version['media_type']
             if version['headers']:
@@ -80,7 +96,9 @@ def create_version_records(warc, version):
             # Note this needs to be an IO object, so if we have bytes, use io.BytesIO(bytes)
             payload = BytesIO(load_response_body(version))
         else:
-            http_headers = StatusAndHeaders(status_text(302), (('Location', history[index + 1]),), protocol='HTTP/1.1')
+            recorded_headers = { 'Date': format_datetime_http(capture_time) }
+            recorded_headers['Location'] = history[index + 1]
+            http_headers = StatusAndHeaders(status_text(302), recorded_headers.items(), protocol='HTTP/1.1')
             payload = None
 
         # FIXME: Consider using warcit's WARC-Source-URI for the Versionista URL
@@ -90,7 +108,10 @@ def create_version_records(warc, version):
             'response',
             payload=payload,
             http_headers=http_headers,
-            warc_headers_dict={'WARC-Record-ID': record_id, 'WARC-Date': version['capture_time'].isoformat()}
+            warc_headers_dict={
+                'WARC-Record-ID': record_id,
+                'WARC-Date': format_datetime_iso(capture_time)
+            }
         ))
         # FIXME: add a metadata record?
         # DCMI isVersionOf with page URL? https://www.dublincore.org/specifications/dublin-core/dcmi-terms/#http://purl.org/dc/terms/isVersionOf
@@ -98,7 +119,7 @@ def create_version_records(warc, version):
     return records
 
 
-def main(skip_errors=False, start=0, limit=0, name='versionista'):
+def main(skip_errors=False, start=0, limit=0, name='versionista', gzip=True):
     logging.basicConfig(level=logging.WARNING)
 
     chunk_size = min(1000, limit)
@@ -106,9 +127,11 @@ def main(skip_errors=False, start=0, limit=0, name='versionista'):
 
     skipped = Counter()
 
-    filename = f'{name}.warc.gz'
+    filename = f'{name}.warc'
+    if gzip:
+        filename += '.gz'
     with open(filename, 'wb') as fh:
-        writer = WARCWriter(fh, gzip=True, warc_version='1.1')
+        writer = WARCWriter(fh, gzip=gzip, warc_version='1.1')
 
         # Lots more that should probably go here, see spec §10.1
         # https://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1-annotated/#example-of-warcinfo-record
@@ -144,4 +167,4 @@ def main(skip_errors=False, start=0, limit=0, name='versionista'):
 
 
 if __name__ == '__main__':
-    main(skip_errors=False, limit=5000, name='edgi_wm_versionista')
+    main(skip_errors=False, limit=1, name='edgi_wm_versionista', gzip=False)
