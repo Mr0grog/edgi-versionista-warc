@@ -38,6 +38,19 @@ def status_text(code):
     return f'{status.value} {status.phrase}'
 
 
+def load_response_body(version):
+    body_response = httpx.get(version['body_url'])
+    if body_response.status_code == 404:
+        raise MissingBodyError(version['uuid'])
+
+    actual_hash = hashlib.sha256(body_response.content).hexdigest()
+    if actual_hash != version['body_hash']:
+        detail = f'  Expected: {version["body_hash"]}\n  Actual:   {actual_hash}'
+        raise AssertionError(f'Saved body does not match expected hash for version {version["uuid"]}\n{detail}')
+
+    return body_response.content
+
+
 def create_version_records(warc, version):
     records = []
     version_id = version['uuid']
@@ -64,17 +77,8 @@ def create_version_records(warc, version):
                     if key.lower() not in BAD_HEADERS:
                         recorded_headers[key] = value
             http_headers = StatusAndHeaders(status_text(version['status']), recorded_headers.items(), protocol='HTTP/1.1')
-
-            body_response = httpx.get(version['body_url'])
-            if body_response.status_code == 404:
-                raise MissingBodyError(version_id)
-
-            actual_hash = hashlib.sha256(body_response.content).hexdigest()
-            if actual_hash != version['body_hash']:
-                raise AssertionError(f'Saved body does not match expected hash for version {version_id}\n  Expected: {version["body_hash"]}\n  Actual:   {actual_hash}')
-
             # Note this needs to be an IO object, so if we have bytes, use io.BytesIO(bytes)
-            payload = BytesIO(body_response.content)
+            payload = BytesIO(load_response_body(version))
         else:
             http_headers = StatusAndHeaders(status_text(302), (('Location', history[index + 1]),), protocol='HTTP/1.1')
             payload = None

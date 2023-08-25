@@ -25,7 +25,12 @@ managed = true
 dev-dependencies = [
     "ipython>=8.12.2",
     "setuptools>=68.1.2",
+    "ruff>=0.0.285",
 ]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.ruff]
+line-length = 140
+select = ["E", "F", "B", "W"]

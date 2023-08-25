@@ -1,3 +1,4 @@
+# ruff: noqa: B028, B904
 # Functions for interacting with web-monitoring-db
 from collections.abc import Sequence
 import dateutil.tz
