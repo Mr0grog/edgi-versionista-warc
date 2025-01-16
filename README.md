@@ -1,17 +1,17 @@
 # Make a WARC from Versionista Data in the EDGI WM DB
 
-Use [Rye][] to manage this project.
+Use [uv][] to manage this project.
 
 1. Setup:
 
     ```sh
-    rye sync
+    uv sync
     ```
 
 2. Run script:
 
     ```sh
-    rye run python write_custom_warc.py
+    uv run python write_custom_warc.py
     ```
 
 
@@ -27,3 +27,6 @@ Format a `metadata` record from the `source_metadata` field. What goes in it?
 ## Questions
 
 - Wayback CDX uses SHA-1 base32 hashes; should we use same for WARC-Block-Digest?
+
+
+[uv]: https://docs.astral.sh/uv/
