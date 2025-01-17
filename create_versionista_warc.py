@@ -11,6 +11,7 @@ from textwrap import dedent
 import httpx
 from tqdm import tqdm
 from warcio import WARCWriter, StatusAndHeaders
+from warcio.recordloader import ArcWarcRecord
 import web_monitoring_db
 
 
@@ -23,6 +24,8 @@ BAD_HEADERS = set([
 ])
 
 GIGABYTE = 1024 * 1024 * 1024
+
+WARC_VERSION = '1.1'
 
 
 class BadDataError(Exception):
@@ -37,6 +40,33 @@ class BadDataError(Exception):
 
 class MissingBodyError(BadDataError):
     reason = 'Body_never_saved'
+
+
+# Based on warcio's implementation:
+# https://github.com/webrecorder/warcio/blob/6775fb9ea3505db144a145c5a8b3ba1dfb822ac1/warcio/recordbuilder.py#L46-L52
+# This is... not really up-to-spec, but generally good enough.
+def serialize_warc_fields(fields_dict: dict) -> BytesIO | None:
+    output = BytesIO()
+    for name, value in fields_dict.items():
+        if not value:
+            continue
+
+        line = f'{name}: {value}\r\n'
+        output.write(line.encode('utf-8'))
+
+    output.seek(0)
+    return output
+
+
+def create_metadata_record(writer: WARCWriter, uri: str, header: dict, data: dict) -> ArcWarcRecord:
+    payload = serialize_warc_fields(data)
+    return writer.create_warc_record(
+        uri,
+        'metadata',
+        warc_headers_dict=header,
+        payload=payload,
+        length=payload.tell()
+    )
 
 
 def format_datetime_http(time):
@@ -86,6 +116,8 @@ def create_version_records(warc, version):
     if version['source_metadata'].get('redirects'):
         history.extend(version['source_metadata']['redirects'])
 
+    first_record_id = None
+    previous_url = None
     final_url = history[-1]
     for index, url in enumerate(history):
         recorded_headers = { 'Date': format_datetime_http(capture_time) }
@@ -97,32 +129,58 @@ def create_version_records(warc, version):
                     if key.lower() not in BAD_HEADERS:
                         recorded_headers[key] = value
             http_headers = StatusAndHeaders(status_text(version['status']), recorded_headers.items(), protocol='HTTP/1.1')
-            # Note this needs to be an IO object, so if we have bytes, use io.BytesIO(bytes)
             payload = BytesIO(load_response_body(version))
         else:
-            recorded_headers = { 'Date': format_datetime_http(capture_time) }
             recorded_headers['Location'] = history[index + 1]
             http_headers = StatusAndHeaders(status_text(302), recorded_headers.items(), protocol='HTTP/1.1')
             payload = None
 
-        # FIXME: Consider using warcit's WARC-Source-URI for the Versionista URL
-        record_id = f'<https://api.monitoring.envirodatagov.org/api/v0/versions/{version_id}/responses/{index}>'
+        database_url = f'https://api.monitoring.envirodatagov.org/api/v0/versions/{version_id}'
+        record_id = f'<{database_url}/responses/{index}>'
+        warc_header = {
+            'WARC-Record-ID': record_id,
+            'WARC-Date': format_datetime_iso(capture_time),
+            # This field is non-standard, and comes from warcit:
+            #   https://github.com/webrecorder/warcit#warc-structure-and-format
+            # We put the Versionista URL here and the WM database URL in the
+            # metadata record.
+            'WARC-Source-URI': version['source_metadata']['url'],
+        }
+        if index == 0:
+            first_record_id = record_id
+        else:
+            warc_header['WARC-Concurrent-To'] = first_record_id
+
         records.append(warc.create_warc_record(
             url,
             'response',
             payload=payload,
             http_headers=http_headers,
-            warc_headers_dict={
-                'WARC-Record-ID': record_id,
-                'WARC-Date': format_datetime_iso(capture_time)
-                # Use warcit-style `WARC-Source-URI` header to link either versionista URL or WMDB URL?
-                # https://github.com/webrecorder/warcit#warc-structure-and-format
+            warc_headers_dict=warc_header
+        ))
+
+        if not first_record_id:
+            first_record_id = record_id
+
+        records.append(create_metadata_record(
+            warc,
+            url,
+            header={
+                'WARC-Date': format_datetime_iso(capture_time),
+                'WARC-Refers-To': record_id,
+                'WARC-Concurrent-To': first_record_id,
+            },
+            data={
+                # Directly listed in WARC standard:
+                'via': previous_url,
+                'hopsFromSeed': 'R' * index,
+                # Standardized via Dublin Core:
+                'title': version['title'],
+                'source': database_url
             }
         ))
-        # FIXME: add a metadata record?
-        # DCMI isVersionOf with page URL? https://www.dublincore.org/specifications/dublin-core/dcmi-terms/#http://purl.org/dc/terms/isVersionOf
-        # Use `via`, `hopsFromSeed` to link redirects?
-        # Use `fetchTimeMs` when we have it here (version.source_metadata.load_time)
+
+        previous_url = url
 
     return records
 
@@ -143,18 +201,19 @@ def main(*, skip_errors=False, start=0, limit=0, name='versionista', gzip=True, 
     if gzip:
         filename += '.gz'
     with open(filename, 'wb') as fh:
-        writer = WARCWriter(fh, gzip=gzip, warc_version='1.1')
+        writer = WARCWriter(fh, gzip=gzip, warc_version=WARC_VERSION)
 
-        # Lots more that should probably go here, see spec §10.1
-        # https://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1-annotated/#example-of-warcinfo-record
-        # Original acquisition via:
-        # - https://github.com/edgi-govdata-archiving/versionista-outputter
-        # - https://github.com/edgi-govdata-archiving/web-monitoring-versionista-scraper
         record = writer.create_warcinfo_record(filename, {
             # Or `import pkg_resources; pkg_resources.get_distribution('warcio').version
             'software': f'warcio/{importlib.metadata.version("warcio")}',
+            'format': f'WARC file version {WARC_VERSION}',
+            'operator': '"Environmental Data & Governance Initiative" <contact@envirodatagov.org>',
             'description': dedent("""\
-                Test manually created WARC""").replace('\n', ' ')
+                Web content captured by EDGI's Web Monitoring project using
+                Versionista (https://versionista.com). This WARC is synthesized
+                from data that was originally archived extracted from
+                Versionista via https://github.com/edgi-govdata-archiving/versionista-outputter
+                and https://github.com/edgi-govdata-archiving/web-monitoring-versionista-scraper.""").replace('\n', ' ')
         })
         writer.write_record(record)
 
