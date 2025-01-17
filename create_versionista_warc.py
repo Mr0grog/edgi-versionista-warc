@@ -1,16 +1,21 @@
-from collections import Counter
+from collections import Counter, OrderedDict
 from datetime import timezone
 import email.utils
 import hashlib
 from http import HTTPStatus
 import importlib.metadata
-from io import BytesIO
+from io import BytesIO, BufferedWriter
 from itertools import islice
 import logging
+from pathlib import Path
 from textwrap import dedent
+from typing import Self
+from dateutil.parser import parse as parse_timestamp
 import httpx
 from tqdm import tqdm
 from warcio import WARCWriter, StatusAndHeaders
+from warcio.warcwriter import BufferWARCWriter
+from warcio.recordbuilder import RecordBuilder
 from warcio.recordloader import ArcWarcRecord
 import web_monitoring_db
 
@@ -54,18 +59,19 @@ def serialize_warc_fields(fields_dict: dict) -> BytesIO:
         line = f'{name}: {value}\r\n'
         output.write(line.encode('utf-8'))
 
-    output.seek(0)
     return output
 
 
-def create_metadata_record(writer: WARCWriter, uri: str, header: dict, data: dict) -> ArcWarcRecord:
+def create_metadata_record(writer: RecordBuilder, uri: str, header: dict, data: dict) -> ArcWarcRecord:
     payload = serialize_warc_fields(data)
+    length = payload.tell()
+    payload.seek(0)
     return writer.create_warc_record(
         uri,
         'metadata',
         warc_headers_dict=header,
         payload=payload,
-        length=payload.tell()
+        length=length
     )
 
 
@@ -101,10 +107,102 @@ def load_response_body(version):
     return body_response.content
 
 
-revisit_cache: dict[str, dict] = {}
+class WarcSeries:
+    def __init__(self, base_path, gzip=True, size=8 * GIGABYTE, info=None, revisit_cache_size=10_000):
+        self._file: BufferedWriter | None = None
+        self._writer: WARCWriter | None = None
+        self._created_names = Counter()
+        self._revisit_cache = OrderedDict()
+        self._revisit_cache_size = revisit_cache_size
+        self.size: int = size
+        self.gzip: bool = gzip
+        self.warcinfo: dict = info or {}
+
+        path = Path(base_path)
+        if path.is_dir():
+            self.directory = path
+            self.file_base = 'archive'
+        else:
+            self.directory = path.parent
+            self.file_base = path.name
+
+    def close(self):
+        self._close_writer()
+
+    def write_records(self, records):
+        writer = self._writer
+        if not writer:
+            record_time = parse_timestamp(records[0].rec_headers.get_header('WARC-Date'))
+            writer = self._create_writer(record_time.strftime('--%Y-%m-%dT%H%M%S'))
+
+        for record in records:
+            writer.write_record(record)
+
+        if self._file and self._file.tell() > self.size:
+            self._close_writer()
+
+    def cache_revisitable_record(self, record, key):
+        if len(self._revisit_cache) >= self._revisit_cache_size:
+            self._revisit_cache.popitem()
+
+        headers = record.rec_headers
+        self._revisit_cache[key] = {
+            'id': headers.get_header('WARC-Record-ID'),
+            'warc_digest': headers.get_header('WARC-Payload-Digest'),
+            'uri': headers.get_header('WARC-Target-URI'),
+            'date': headers.get_header('WARC-Date'),
+        }
+
+    def get_revisit(self, key) -> dict | None:
+        return self._revisit_cache.get(key)
+
+    @property
+    def builder(self) -> RecordBuilder:
+        if self._writer:
+            return self._writer
+        else:
+            return BufferWARCWriter(warc_version=WARC_VERSION)
+
+    def _close_writer(self) -> None:
+        self._revisit_cache.clear()
+        self._writer = None
+        if self._file:
+            self._file.close()
+            self._file = None
+
+    def _create_writer(self, suffix='') -> WARCWriter:
+        self._close_writer()
+
+        base_name = self.file_base + suffix
+        self._created_names[base_name] += 1
+        if self._created_names[base_name] > 1:
+            base_name += f'-{self._created_names[base_name]}'
+
+        file_name = f'{base_name}.warc'
+        if self.gzip:
+            file_name += '.gz'
+
+        print(f'OPENING WARC: "{self.directory / file_name}"')
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self._file = open(self.directory / file_name, 'wb')
+        self._writer = WARCWriter(self._file, gzip=self.gzip, warc_version=WARC_VERSION)
+
+        self._writer.write_record(self._writer.create_warcinfo_record(file_name, {
+            'software': f'warcio/{importlib.metadata.version("warcio")}',
+            'format': f'WARC file version {WARC_VERSION}',
+            **self.warcinfo
+        }))
+
+        return self._writer
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
 
-def create_version_records(warc: WARCWriter, version: dict) -> list[ArcWarcRecord]:
+def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecord]:
     records = []
     version_id = version['uuid']
     capture_time = version["capture_time"]
@@ -149,21 +247,20 @@ def create_version_records(warc: WARCWriter, version: dict) -> list[ArcWarcRecor
                         recorded_headers[key] = value
             http_headers = StatusAndHeaders(status_text(version['status']), recorded_headers.items(), protocol='HTTP/1.1')
 
-            if version['body_hash'] in revisit_cache:
-                revisit_data = revisit_cache[version['body_hash']]
-
+            revisit = warc.get_revisit(version['body_hash'])
+            if revisit:
                 # For some reason this is not an option on create_revisit_record.
-                warc_header['WARC-Refers-To'] = revisit_data['id']
-                records.append(warc.create_revisit_record(
+                warc_header['WARC-Refers-To'] = revisit['id']
+                records.append(warc.builder.create_revisit_record(
                     url,
-                    revisit_data['warc_digest'],
-                    revisit_data['uri'],
-                    revisit_data['date'],
+                    revisit['warc_digest'],
+                    revisit['uri'],
+                    revisit['date'],
                     http_headers=http_headers,
                     warc_headers_dict=warc_header
                 ))
             else:
-                record = warc.create_warc_record(
+                record = warc.builder.create_warc_record(
                     url,
                     'response',
                     payload=BytesIO(load_response_body(version)),
@@ -171,16 +268,11 @@ def create_version_records(warc: WARCWriter, version: dict) -> list[ArcWarcRecor
                     warc_headers_dict=warc_header
                 )
                 records.append(record)
-                revisit_cache[version['body_hash']] = {
-                    'id': record_id,
-                    'warc_digest': record.rec_headers.get_header('WARC-Payload-Digest'),
-                    'uri': url,
-                    'date': warc_header['WARC-Date'],
-                }
+                warc.cache_revisitable_record(record, version['body_hash'])
         else:
             recorded_headers['Location'] = history[index + 1]
             http_headers = StatusAndHeaders(status_text(302), recorded_headers.items(), protocol='HTTP/1.1')
-            records.append(warc.create_warc_record(
+            records.append(warc.builder.create_warc_record(
                 url,
                 'response',
                 payload=None,
@@ -192,7 +284,7 @@ def create_version_records(warc: WARCWriter, version: dict) -> list[ArcWarcRecor
             first_record_id = record_id
 
         records.append(create_metadata_record(
-            warc,
+            warc.builder,
             url,
             header={
                 'WARC-Date': format_datetime_iso(capture_time),
@@ -214,8 +306,7 @@ def create_version_records(warc: WARCWriter, version: dict) -> list[ArcWarcRecor
     return records
 
 
-# FIXME: implement rolling file writing based on `warc_size`.
-def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=8 * GIGABYTE):
+def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 * GIGABYTE)):
     logging.basicConfig(level=logging.WARNING)
 
     # The magic number here is the current count of Versionista records.
@@ -226,28 +317,18 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=8 * GIGAB
 
     skipped = Counter()
 
-    filename = f'{name}.warc'
-    if gzip:
-        filename += '.gz'
+    warc_builder = WarcSeries(name, gzip=gzip, size=warc_size, info={
+        'operator': '"Environmental Data & Governance Initiative" <contact@envirodatagov.org>',
+        'description': dedent("""\
+            Web content captured by EDGI's Web Monitoring project using
+            Versionista (https://versionista.com). This WARC is synthesized
+            from data that was originally archived extracted from
+            Versionista via https://github.com/edgi-govdata-archiving/versionista-outputter
+            and https://github.com/edgi-govdata-archiving/web-monitoring-versionista-scraper.""").replace('\n', ' ')
+    })
 
     try:
-        with open(filename, 'wb') as fh:
-            writer = WARCWriter(fh, gzip=gzip, warc_version=WARC_VERSION)
-
-            record = writer.create_warcinfo_record(filename, {
-                # Or `import pkg_resources; pkg_resources.get_distribution('warcio').version
-                'software': f'warcio/{importlib.metadata.version("warcio")}',
-                'format': f'WARC file version {WARC_VERSION}',
-                'operator': '"Environmental Data & Governance Initiative" <contact@envirodatagov.org>',
-                'description': dedent("""\
-                    Web content captured by EDGI's Web Monitoring project using
-                    Versionista (https://versionista.com). This WARC is synthesized
-                    from data that was originally archived extracted from
-                    Versionista via https://github.com/edgi-govdata-archiving/versionista-outputter
-                    and https://github.com/edgi-govdata-archiving/web-monitoring-versionista-scraper.""").replace('\n', ' ')
-            })
-            writer.write_record(record)
-
+        with warc_builder as warc:
             versions = db_client.get_versions(source_type='versionista', chunk_size=chunk_size)
             if limit:
                 versions = islice(versions, start, limit)
@@ -255,8 +336,7 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=8 * GIGAB
             progress_bar = tqdm(versions, unit=' versions', total=expected_records)
             for version in progress_bar:
                 try:
-                    for record in create_version_records(writer, version):
-                        writer.write_record(record)
+                    warc.write_records(create_version_records(warc, version))
                 except BadDataError as error:
                     progress_bar.write(f'WARNING: {error}')
                     skipped[error.reason] += 1
@@ -273,4 +353,4 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=8 * GIGAB
 
 
 if __name__ == '__main__':
-    main(limit=10, name='edgi_wm_versionista', gzip=False)
+    main(limit=100, name='./out/edgi_wm_versionista', gzip=False)
