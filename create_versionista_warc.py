@@ -1,23 +1,17 @@
-from collections import Counter, OrderedDict
+from collections import Counter
 from datetime import timezone
 import email.utils
 import hashlib
-from http import HTTPStatus
-import importlib.metadata
-from io import BytesIO, BufferedWriter
+from io import BytesIO
 from itertools import islice
 import logging
-from pathlib import Path
 from textwrap import dedent
-from typing import Self
-from dateutil.parser import parse as parse_timestamp
 import httpx
 from tqdm import tqdm
-from warcio import WARCWriter, StatusAndHeaders
-from warcio.warcwriter import BufferWARCWriter
-from warcio.recordbuilder import RecordBuilder
+from warcio import StatusAndHeaders
 from warcio.recordloader import ArcWarcRecord
 import web_monitoring_db
+from warctools import GIGABYTE, WarcSeries, status_text, create_metadata_record
 
 
 logger = logging.getLogger()
@@ -27,10 +21,6 @@ logger = logging.getLogger()
 BAD_HEADERS = set([
     'age', 'date', 'vary', 'expires', 'x-cachee', 'connection', 'accept-ranges', 'cache-control', 'transfer-encoding'
 ])
-
-GIGABYTE = 1024 * 1024 * 1024
-
-WARC_VERSION = '1.1'
 
 
 class BadDataError(Exception):
@@ -47,34 +37,6 @@ class MissingBodyError(BadDataError):
     reason = 'Body_never_saved'
 
 
-# Based on warcio's implementation:
-# https://github.com/webrecorder/warcio/blob/6775fb9ea3505db144a145c5a8b3ba1dfb822ac1/warcio/recordbuilder.py#L46-L52
-# This is... not really up-to-spec, but generally good enough.
-def serialize_warc_fields(fields_dict: dict) -> BytesIO:
-    output = BytesIO()
-    for name, value in fields_dict.items():
-        if not value:
-            continue
-
-        line = f'{name}: {value}\r\n'
-        output.write(line.encode('utf-8'))
-
-    return output
-
-
-def create_metadata_record(writer: RecordBuilder, uri: str, header: dict, data: dict) -> ArcWarcRecord:
-    payload = serialize_warc_fields(data)
-    length = payload.tell()
-    payload.seek(0)
-    return writer.create_warc_record(
-        uri,
-        'metadata',
-        warc_headers_dict=header,
-        payload=payload,
-        length=length
-    )
-
-
 def format_datetime_http(time):
     # email.utils does not support the UTC object dateutil uses, so fix it.
     return email.utils.format_datetime(time.astimezone(timezone.utc), usegmt=True)
@@ -89,11 +51,6 @@ def format_datetime_iso(time):
     return iso_time
 
 
-def status_text(code):
-    status = HTTPStatus(code)
-    return f'{status.value} {status.phrase}'
-
-
 def load_response_body(version):
     body_response = httpx.get(version['body_url'])
     if body_response.status_code == 404:
@@ -105,101 +62,6 @@ def load_response_body(version):
         raise AssertionError(f'Saved body does not match expected hash for version {version["uuid"]}\n{detail}')
 
     return body_response.content
-
-
-class WarcSeries:
-    def __init__(self, base_path, gzip=True, size=8 * GIGABYTE, info=None, revisit_cache_size=10_000):
-        self._file: BufferedWriter | None = None
-        self._writer: WARCWriter | None = None
-        self._created_names = Counter()
-        self._revisit_cache = OrderedDict()
-        self._revisit_cache_size = revisit_cache_size
-        self.size: int = size
-        self.gzip: bool = gzip
-        self.warcinfo: dict = info or {}
-
-        path = Path(base_path)
-        if path.is_dir():
-            self.directory = path
-            self.file_base = 'archive'
-        else:
-            self.directory = path.parent
-            self.file_base = path.name
-
-    def close(self):
-        self._close_writer()
-
-    def write_records(self, records):
-        writer = self._writer
-        if not writer:
-            record_time = parse_timestamp(records[0].rec_headers.get_header('WARC-Date'))
-            writer = self._create_writer(record_time.strftime('--%Y-%m-%dT%H%M%S'))
-
-        for record in records:
-            writer.write_record(record)
-
-        if self._file and self._file.tell() > self.size:
-            self._close_writer()
-
-    def cache_revisitable_record(self, record, key):
-        if len(self._revisit_cache) >= self._revisit_cache_size:
-            self._revisit_cache.popitem()
-
-        headers = record.rec_headers
-        self._revisit_cache[key] = {
-            'id': headers.get_header('WARC-Record-ID'),
-            'warc_digest': headers.get_header('WARC-Payload-Digest'),
-            'uri': headers.get_header('WARC-Target-URI'),
-            'date': headers.get_header('WARC-Date'),
-        }
-
-    def get_revisit(self, key) -> dict | None:
-        return self._revisit_cache.get(key)
-
-    @property
-    def builder(self) -> RecordBuilder:
-        if self._writer:
-            return self._writer
-        else:
-            return BufferWARCWriter(warc_version=WARC_VERSION)
-
-    def _close_writer(self) -> None:
-        self._revisit_cache.clear()
-        self._writer = None
-        if self._file:
-            self._file.close()
-            self._file = None
-
-    def _create_writer(self, suffix='') -> WARCWriter:
-        self._close_writer()
-
-        base_name = self.file_base + suffix
-        self._created_names[base_name] += 1
-        if self._created_names[base_name] > 1:
-            base_name += f'-{self._created_names[base_name]}'
-
-        file_name = f'{base_name}.warc'
-        if self.gzip:
-            file_name += '.gz'
-
-        print(f'OPENING WARC: "{self.directory / file_name}"')
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self._file = open(self.directory / file_name, 'wb')
-        self._writer = WARCWriter(self._file, gzip=self.gzip, warc_version=WARC_VERSION)
-
-        self._writer.write_record(self._writer.create_warcinfo_record(file_name, {
-            'software': f'warcio/{importlib.metadata.version("warcio")}',
-            'format': f'WARC file version {WARC_VERSION}',
-            **self.warcinfo
-        }))
-
-        return self._writer
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.close()
 
 
 def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecord]:
