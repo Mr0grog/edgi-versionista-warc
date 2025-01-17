@@ -101,7 +101,10 @@ def load_response_body(version):
     return body_response.content
 
 
-def create_version_records(warc, version):
+revisit_cache: dict[str, dict] = {}
+
+
+def create_version_records(warc: WARCWriter, version: dict) -> list[ArcWarcRecord]:
     records = []
     version_id = version['uuid']
     capture_time = version["capture_time"]
@@ -120,6 +123,7 @@ def create_version_records(warc, version):
     previous_url = None
     final_url = history[-1]
     for index, url in enumerate(history):
+        revisit_data = None
         recorded_headers = { 'Date': format_datetime_http(capture_time) }
         if url == final_url:
             if version['media_type']:
@@ -129,7 +133,12 @@ def create_version_records(warc, version):
                     if key.lower() not in BAD_HEADERS:
                         recorded_headers[key] = value
             http_headers = StatusAndHeaders(status_text(version['status']), recorded_headers.items(), protocol='HTTP/1.1')
-            payload = BytesIO(load_response_body(version))
+
+            if version['body_hash'] in revisit_cache:
+                revisit_data = revisit_cache[version['body_hash']]
+                payload = None
+            else:
+                payload = BytesIO(load_response_body(version))
         else:
             recorded_headers['Location'] = history[index + 1]
             http_headers = StatusAndHeaders(status_text(302), recorded_headers.items(), protocol='HTTP/1.1')
@@ -151,13 +160,33 @@ def create_version_records(warc, version):
         else:
             warc_header['WARC-Concurrent-To'] = first_record_id
 
-        records.append(warc.create_warc_record(
-            url,
-            'response',
-            payload=payload,
-            http_headers=http_headers,
-            warc_headers_dict=warc_header
-        ))
+        if revisit_data:
+            # For some reason this is not an option on create_revisit_record.
+            warc_header['WARC-Refers-To'] = revisit_data['id']
+            records.append(warc.create_revisit_record(
+                url,
+                revisit_data['warc_digest'],
+                revisit_data['uri'],
+                revisit_data['date'],
+                http_headers=http_headers,
+                warc_headers_dict=warc_header
+            ))
+        else:
+            record = warc.create_warc_record(
+                url,
+                'response',
+                payload=payload,
+                http_headers=http_headers,
+                warc_headers_dict=warc_header
+            )
+            records.append(record)
+            if url == final_url:
+                revisit_cache[version['body_hash']] = {
+                    'id': record_id,
+                    'warc_digest': record.rec_headers.get_header('WARC-Payload-Digest'),
+                    'uri': url,
+                    'date': format_datetime_iso(capture_time),
+                }
 
         if not first_record_id:
             first_record_id = record_id
