@@ -8,7 +8,6 @@ from io import BytesIO
 from itertools import islice
 import logging
 from textwrap import dedent
-from traceback import format_exception
 import httpx
 from tqdm import tqdm
 from warcio import WARCWriter, StatusAndHeaders
@@ -187,7 +186,7 @@ def create_version_records(warc, version):
 
 
 # FIXME: implement rolling file writing based on `warc_size`.
-def main(*, skip_errors=False, start=0, limit=0, name='versionista', gzip=True, warc_size=8 * GIGABYTE):
+def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=8 * GIGABYTE):
     logging.basicConfig(level=logging.WARNING)
 
     # The magic number here is the current count of Versionista records.
@@ -201,50 +200,48 @@ def main(*, skip_errors=False, start=0, limit=0, name='versionista', gzip=True, 
     filename = f'{name}.warc'
     if gzip:
         filename += '.gz'
-    with open(filename, 'wb') as fh:
-        writer = WARCWriter(fh, gzip=gzip, warc_version=WARC_VERSION)
 
-        record = writer.create_warcinfo_record(filename, {
-            # Or `import pkg_resources; pkg_resources.get_distribution('warcio').version
-            'software': f'warcio/{importlib.metadata.version("warcio")}',
-            'format': f'WARC file version {WARC_VERSION}',
-            'operator': '"Environmental Data & Governance Initiative" <contact@envirodatagov.org>',
-            'description': dedent("""\
-                Web content captured by EDGI's Web Monitoring project using
-                Versionista (https://versionista.com). This WARC is synthesized
-                from data that was originally archived extracted from
-                Versionista via https://github.com/edgi-govdata-archiving/versionista-outputter
-                and https://github.com/edgi-govdata-archiving/web-monitoring-versionista-scraper.""").replace('\n', ' ')
-        })
-        writer.write_record(record)
+    try:
+        with open(filename, 'wb') as fh:
+            writer = WARCWriter(fh, gzip=gzip, warc_version=WARC_VERSION)
 
-        versions = db_client.get_versions(source_type='versionista', chunk_size=chunk_size)
-        if limit:
-            versions = islice(versions, start, limit)
+            record = writer.create_warcinfo_record(filename, {
+                # Or `import pkg_resources; pkg_resources.get_distribution('warcio').version
+                'software': f'warcio/{importlib.metadata.version("warcio")}',
+                'format': f'WARC file version {WARC_VERSION}',
+                'operator': '"Environmental Data & Governance Initiative" <contact@envirodatagov.org>',
+                'description': dedent("""\
+                    Web content captured by EDGI's Web Monitoring project using
+                    Versionista (https://versionista.com). This WARC is synthesized
+                    from data that was originally archived extracted from
+                    Versionista via https://github.com/edgi-govdata-archiving/versionista-outputter
+                    and https://github.com/edgi-govdata-archiving/web-monitoring-versionista-scraper.""").replace('\n', ' ')
+            })
+            writer.write_record(record)
 
-        progress_bar = tqdm(versions, unit=' versions', total=expected_records)
-        for version in progress_bar:
-            try:
-                for record in create_version_records(writer, version):
-                    writer.write_record(record)
-            except BadDataError as error:
-                progress_bar.write(f'WARNING: {error}')
-                skipped[error.reason] += 1
-            except Exception as error:
-                # TODO: should probably never make this skippable. The summary
-                # stuff about what was skipped and so on should be in a finally
-                # block so it happens regardless.
-                progress_bar.write(f'Error processing version {version.get("uuid")}: {''.join(format_exception(error))}')
-                if not skip_errors:
-                    return
+            versions = db_client.get_versions(source_type='versionista', chunk_size=chunk_size)
+            if limit:
+                versions = islice(versions, start, limit)
 
-    # FIXME: Add resource record with logs:
-    # https://iipc.github.io/warc-specifications/guidelines/warc-implementation-guidelines/#use-of-resource-records-for-processing-information
+            progress_bar = tqdm(versions, unit=' versions', total=expected_records)
+            for version in progress_bar:
+                try:
+                    for record in create_version_records(writer, version):
+                        writer.write_record(record)
+                except BadDataError as error:
+                    progress_bar.write(f'WARNING: {error}')
+                    skipped[error.reason] += 1
+                except Exception as error:
+                    raise RuntimeError(f'Error processing version {version.get("uuid")}: {error}') from error
 
-    print(f'Skipped {skipped.total()} Versionista versions:')
-    for reason, count in skipped.items():
-        print(f'  {reason.ljust(25, ".")} {str(count).rjust(5)}')
+        # FIXME: Add resource record with logs:
+        # https://iipc.github.io/warc-specifications/guidelines/warc-implementation-guidelines/#use-of-resource-records-for-processing-information
+
+    finally:
+        print(f'Skipped {skipped.total()} Versionista versions:')
+        for reason, count in skipped.items():
+            print(f'  {reason.ljust(25, ".")} {str(count).rjust(5)}')
 
 
 if __name__ == '__main__':
-    main(skip_errors=False, limit=10, name='edgi_wm_versionista', gzip=False)
+    main(limit=10, name='edgi_wm_versionista', gzip=False)
