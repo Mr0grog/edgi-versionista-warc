@@ -24,4 +24,6 @@ dev = [
 
 [tool.ruff]
 line-length = 140
+
+[tool.ruff.lint]
 select = ["E", "F", "B", "W"]
