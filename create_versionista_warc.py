@@ -8,6 +8,7 @@ from io import BytesIO
 from itertools import islice
 import logging
 from textwrap import dedent
+from traceback import format_exception
 import httpx
 from tqdm import tqdm
 from warcio import WARCWriter, StatusAndHeaders
@@ -227,13 +228,13 @@ def main(*, skip_errors=False, start=0, limit=0, name='versionista', gzip=True, 
                 for record in create_version_records(writer, version):
                     writer.write_record(record)
             except BadDataError as error:
-                # logger.warning(str(error))
                 progress_bar.write(f'WARNING: {error}')
                 skipped[error.reason] += 1
             except Exception as error:
-                # logger.error(f'Error processing version {version.get("uuid")}')
-                # logger.exception(error)
-                progress_bar.write(f'Error processing version {version.get("uuid")}: {error}')
+                # TODO: should probably never make this skippable. The summary
+                # stuff about what was skipped and so on should be in a finally
+                # block so it happens regardless.
+                progress_bar.write(f'Error processing version {version.get("uuid")}: {''.join(format_exception(error))}')
                 if not skip_errors:
                     return
 
