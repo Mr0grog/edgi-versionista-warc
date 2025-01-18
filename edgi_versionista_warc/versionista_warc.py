@@ -33,6 +33,10 @@ class BadDataError(Exception):
         super().__init__(f'{message or self.reason} (version={version_id})')
 
 
+class MissingStatusCode(BadDataError):
+    reason = 'Missing_status'
+
+
 class MissingBodyError(BadDataError):
     reason = 'Body_never_saved'
 
@@ -59,7 +63,11 @@ def load_response_body(version):
     actual_hash = hashlib.sha256(body_response.content).hexdigest()
     if actual_hash != version['body_hash']:
         detail = f'  Expected: {version["body_hash"]}\n  Actual:   {actual_hash}'
-        raise AssertionError(f'Saved body does not match expected hash for version {version["uuid"]}\n{detail}')
+        raise BadDataError(
+            version['uuid'],
+            f'Saved body does not match expected hash\n{detail}',
+            reason='Mismatched_body_data'
+        )
 
     return body_response.content
 
@@ -70,7 +78,7 @@ def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecor
     capture_time = version["capture_time"]
 
     if version['status'] is None:
-        raise BadDataError(version_id, reason='Missing_status')
+        raise MissingStatusCode(version_id)
 
     if version['body_url'] is None:
         raise MissingBodyError(version_id)
