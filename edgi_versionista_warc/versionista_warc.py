@@ -77,7 +77,10 @@ def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecor
 
     history = [version['url']]
     if version['source_metadata'].get('redirects'):
-        history.extend(version['source_metadata']['redirects'])
+        # Sometimes this field has null entries. :(
+        redirects = version['source_metadata']['redirects']
+        history.extend([url for url in redirects
+                        if isinstance(url, str) and len(url) > 0])
 
     first_record_id = None
     previous_url = None
