@@ -1,5 +1,5 @@
 [project]
-name = "versionista-warc"
+name = "edgi-versionista-warc"
 version = "0.1.0"
 description = "Build WARCs from Versionista data in EDGI DB"
 authors = [

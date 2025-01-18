@@ -12,7 +12,7 @@ from warcio.recordbuilder import RecordBuilder
 from warcio.recordloader import ArcWarcRecord
 
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 GIGABYTE = 1024 * 1024 * 1024
@@ -138,7 +138,7 @@ class WarcSeries:
         if self.gzip:
             file_name += '.gz'
 
-        logger.info(f'Opening WARC: "{self.directory / file_name}"')
+        logger.info(f'Creating WARC: "{self.directory / file_name}"')
         self.directory.mkdir(parents=True, exist_ok=True)
         self._file = open(self.directory / file_name, 'wb')
         self._writer = WARCWriter(self._file, gzip=self.gzip, warc_version=WARC_VERSION)

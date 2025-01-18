@@ -8,11 +8,13 @@ Use [uv][] to manage this project.
     uv sync
     ```
 
-2. Run script:
+2. Run script to output WARCs at paths like `out/archive-2018-02-13T012233.warg.gz`:
 
     ```sh
-    uv run python write_custom_warc.py
+    uv run edgi-versionista-warc.py out/archive --limit 100
     ```
+
+    Use `--help` to see options.
 
 
 ## Notes
