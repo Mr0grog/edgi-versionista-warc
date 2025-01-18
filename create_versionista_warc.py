@@ -1,3 +1,4 @@
+import argparse
 from collections import Counter
 from datetime import timezone
 import email.utils
@@ -8,6 +9,7 @@ import logging
 from textwrap import dedent
 import httpx
 from tqdm import tqdm
+from tqdm.contrib.logging import tqdm_logging_redirect
 from warcio import StatusAndHeaders
 from warcio.recordloader import ArcWarcRecord
 import web_monitoring_db
@@ -169,10 +171,12 @@ def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecor
 
 
 def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 * GIGABYTE)):
-    logging.basicConfig(level=logging.WARNING)
+    limit = limit or 0
 
     # The magic number here is the current count of Versionista records.
-    expected_records = min(845_325, limit)
+    expected_records = 845_325
+    if limit:
+        expected_records = min(845_325, limit)
 
     chunk_size = min(1000, limit)
     db_client = web_monitoring_db.Client.from_env()
@@ -195,15 +199,16 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 
             if limit:
                 versions = islice(versions, start, limit)
 
-            progress_bar = tqdm(versions, unit=' versions', total=expected_records)
-            for version in progress_bar:
-                try:
-                    warc.write_records(create_version_records(warc, version))
-                except BadDataError as error:
-                    progress_bar.write(f'WARNING: {error}')
-                    skipped[error.reason] += 1
-                except Exception as error:
-                    raise RuntimeError(f'Error processing version {version.get("uuid")}: {error}') from error
+            with tqdm_logging_redirect(versions, unit=' versions', total=expected_records) as progress_bar:
+                for version in progress_bar:
+                    try:
+                        warc.write_records(create_version_records(warc, version))
+                    except BadDataError as error:
+                        # progress_bar.write(f'WARNING: {error}')
+                        logger.warning(str(error))
+                        skipped[error.reason] += 1
+                    except Exception as error:
+                        raise RuntimeError(f'Error processing version {version.get("uuid")}: {error}') from error
 
         # FIXME: Add resource record with logs:
         # https://iipc.github.io/warc-specifications/guidelines/warc-implementation-guidelines/#use-of-resource-records-for-processing-information
@@ -214,5 +219,23 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 
             print(f'  {reason.ljust(25, ".")} {str(count).rjust(5)}')
 
 
+def cli() -> None:
+    logging.basicConfig(level=logging.INFO)
+
+    parser = argparse.ArgumentParser(description="Create WARC files to store captures of Versionista data from EDGI's Web Monitoring Database")
+    parser.add_argument('--uncompressed', action='store_true', help='Create uncompressed `.warc` files instead of gzipped `.warc.gz` files')
+    parser.add_argument('--limit', type=int, help='Archive up to this many records from Web Monitoring DB')
+    parser.add_argument('--size', type=float, default=7.95, help='Generate WARC up to about this many gigabytes each')
+    parser.add_argument('path', help='Path to generate WARC files at. If the path is `out/archive`, WARC files will be built at paths like `out/archive-YYYY-MM-DDThhmmss.warc.gz`')
+    configuration = parser.parse_args()
+
+    main(
+        name=configuration.path,
+        gzip=(not configuration.uncompressed),
+        limit=configuration.limit,
+        warc_size=int(configuration.size * GIGABYTE)
+    )
+
+
 if __name__ == '__main__':
-    main(limit=100, name='./out/edgi_wm_versionista', gzip=False)
+    cli()

@@ -2,6 +2,7 @@ from collections import Counter, OrderedDict
 from http import HTTPStatus
 import importlib.metadata
 from io import BytesIO, BufferedWriter
+import logging
 from pathlib import Path
 from typing import Self
 from dateutil.parser import parse as parse_timestamp
@@ -9,6 +10,9 @@ from warcio import WARCWriter
 from warcio.warcwriter import BufferWARCWriter
 from warcio.recordbuilder import RecordBuilder
 from warcio.recordloader import ArcWarcRecord
+
+
+logger = logging.getLogger()
 
 
 GIGABYTE = 1024 * 1024 * 1024
@@ -134,7 +138,7 @@ class WarcSeries:
         if self.gzip:
             file_name += '.gz'
 
-        print(f'OPENING WARC: "{self.directory / file_name}"')
+        logger.info(f'Opening WARC: "{self.directory / file_name}"')
         self.directory.mkdir(parents=True, exist_ok=True)
         self._file = open(self.directory / file_name, 'wb')
         self._writer = WARCWriter(self._file, gzip=self.gzip, warc_version=WARC_VERSION)
