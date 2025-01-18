@@ -173,10 +173,11 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 
 
     # The magic number here is the current count of Versionista records.
     expected_records = 845_325
+    chunk_size = 10_000
     if limit:
-        expected_records = min(845_325, limit)
+        expected_records = min(expected_records, limit)
+        chunk_size = min(chunk_size, limit)
 
-    chunk_size = min(1000, limit)
     db_client = DbClient.from_env()
 
     skipped = Counter()
