@@ -55,11 +55,15 @@ def format_datetime_iso(time):
     return iso_time
 
 
+body_loader = httpx.Client(transport=httpx.HTTPTransport(retries=3))
+
+
 def load_response_body(version):
-    body_response = httpx.get(version['body_url'])
+    body_response = body_loader.get(version['body_url'])
     if body_response.status_code == 404:
         raise MissingBodyError(version['uuid'])
 
+    body_response.raise_for_status()
     actual_hash = hashlib.sha256(body_response.content).hexdigest()
     if actual_hash != version['body_hash']:
         detail = f'  Expected: {version["body_hash"]}\n  Actual:   {actual_hash}'
@@ -184,7 +188,7 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 
 
     # The magic number here is the current count of Versionista records.
     expected_records = 845_325
-    chunk_size = 10_000
+    chunk_size = 5_000
     if limit:
         expected_records = min(expected_records, limit)
         chunk_size = min(chunk_size, limit)
