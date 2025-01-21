@@ -5,6 +5,7 @@ import hashlib
 from io import BytesIO
 from itertools import islice
 import logging
+import re
 from textwrap import dedent
 import httpx
 from tqdm.contrib.logging import tqdm_logging_redirect
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 BAD_HEADERS = set([
     'age', 'date', 'vary', 'expires', 'x-cachee', 'connection', 'accept-ranges', 'cache-control', 'transfer-encoding'
 ])
+
+URL_LIKE = re.compile(r'^(https?|ftp)://')
 
 
 class BadDataError(Exception):
@@ -89,10 +92,13 @@ def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecor
 
     history = [version['url']]
     if version['source_metadata'].get('redirects'):
-        # Sometimes this field has null entries. :(
-        redirects = version['source_metadata']['redirects']
-        history.extend([url for url in redirects
-                        if isinstance(url, str) and len(url) > 0])
+        for redirect in version['source_metadata']['redirects']:
+            if not isinstance(redirect, str) or len(redirect) == 0:
+                logger.warning(f'Version {version['uuid']} has null redirect')
+            elif not URL_LIKE.match(redirect):
+                logger.warning(f'Version {version['uuid']} has non-URL redirect: "{redirect}"')
+            else:
+                history.append(redirect)
 
     first_record_id = None
     previous_url = None
