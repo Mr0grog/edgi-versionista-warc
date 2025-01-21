@@ -203,7 +203,7 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 
 
     skipped = Counter()
 
-    warc_builder = WarcSeries(name, gzip=gzip, size=warc_size, info={
+    warc_builder = WarcSeries(name, gzip=gzip, size=warc_size, revisit_cache_size=100_000, info={
         'operator': '"Environmental Data & Governance Initiative" <contact@envirodatagov.org>',
         'description': dedent("""\
             Web content captured by EDGI's Web Monitoring project using
@@ -219,12 +219,11 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 
             if limit:
                 versions = islice(versions, start, limit)
 
-            with tqdm_logging_redirect(versions, unit=' versions', total=expected_records) as progress_bar:
+            with tqdm_logging_redirect(versions, unit=' versions', total=expected_records, disable=None) as progress_bar:
                 for version in progress_bar:
                     try:
                         warc.write_records(create_version_records(warc, version))
                     except BadDataError as error:
-                        # progress_bar.write(f'WARNING: {error}')
                         logger.warning(str(error))
                         skipped[error.reason] += 1
                     except Exception as error:
