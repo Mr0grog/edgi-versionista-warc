@@ -59,7 +59,7 @@ body_loader = httpx.Client(transport=httpx.HTTPTransport(retries=3))
 
 
 def load_response_body(version):
-    body_response = body_loader.get(version['body_url'])
+    body_response = body_loader.get(version['body_url'], params={'different': False}, follow_redirects=True)
     if body_response.status_code == 404:
         raise MissingBodyError(version['uuid'])
 
@@ -209,7 +209,7 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 
 
     try:
         with warc_builder as warc:
-            versions = db_client.get_versions(source_type='versionista', chunk_size=chunk_size)
+            versions = db_client.get_versions(source_type='versionista', different=False, chunk_size=chunk_size)
             if limit:
                 versions = islice(versions, start, limit)
 
