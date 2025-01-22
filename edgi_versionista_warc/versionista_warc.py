@@ -121,7 +121,15 @@ def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecor
             warc_header['WARC-Concurrent-To'] = first_record_id
 
         recorded_headers = { 'Date': format_datetime_http(capture_time) }
-        if url == final_url:
+        if url.lower().startswith('ftp://'):
+            records.append(warc.builder.create_warc_record(
+                url,
+                'resource',
+                warc_headers_dict=warc_header,
+                warc_content_type=(version['media_type'] or 'application/octet-stream'),
+                payload=BytesIO(load_response_body(version))
+            ))
+        elif url == final_url:
             if version['media_type']:
                 recorded_headers['Content-Type'] = version['media_type']
             if version['headers']:
