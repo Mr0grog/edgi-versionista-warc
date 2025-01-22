@@ -1,5 +1,5 @@
 from collections import Counter
-from datetime import timezone
+from datetime import datetime, timezone
 import email.utils
 import hashlib
 from io import BytesIO
@@ -197,7 +197,16 @@ def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecor
     return records
 
 
-def main(*, start=0, limit=0, path='.', name='edgi-wm-versionista', gzip=True, warc_size=int(7.95 * GIGABYTE)):
+def main(
+    *,
+    start=0,
+    limit=0,
+    path='.',
+    name='edgi-wm-versionista',
+    gzip=True,
+    warc_size=int(7.95 * GIGABYTE),
+    start_date: datetime | None = None
+):
     limit = limit or 0
 
     # The magic number here is the current count of Versionista records.
@@ -223,7 +232,7 @@ def main(*, start=0, limit=0, path='.', name='edgi-wm-versionista', gzip=True, w
 
     try:
         with warc_builder as warc:
-            versions = db_client.get_versions(source_type='versionista', different=False, chunk_size=chunk_size)
+            versions = db_client.get_versions(source_type='versionista', different=False, start_date=start_date, chunk_size=chunk_size)
             if limit:
                 versions = islice(versions, start, limit)
 
