@@ -19,6 +19,8 @@ GIGABYTE = 1024 * 1024 * 1024
 
 WARC_VERSION = '1.1'
 
+STANDARD_STATUS_MESSAGES = set(f'{s.value} {s.phrase.lower()}' for s in HTTPStatus)
+
 
 def status_text(code):
     status = HTTPStatus(code)

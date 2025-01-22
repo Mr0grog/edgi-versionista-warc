@@ -12,6 +12,7 @@ def cli() -> None:
     parser.add_argument('--limit', type=int, help='Archive up to this many records from Web Monitoring DB')
     parser.add_argument('--size', type=float, default=7.95, help='Generate WARC up to about this many gigabytes each')
     parser.add_argument('--from', type=parse_timestamp, help='Start from this timestamp (ISO format)')
+    parser.add_argument('--guess-status', action='store_true', help='Guess status code when it is missing from DB data')
     parser.add_argument('path', help=(
         'Path to generate WARC files at. If the path is `out/archive`, WARC files will be built at paths like'
         '`out/archive-YYYY-MM-DDThhmmss.warc.gz`'
@@ -36,7 +37,8 @@ def cli() -> None:
         gzip=(not configuration.uncompressed),
         limit=configuration.limit,
         warc_size=int(configuration.size * GIGABYTE),
-        start_date=getattr(configuration, 'from')
+        start_date=getattr(configuration, 'from'),
+        guess_status=configuration.guess_status
     )
 
 

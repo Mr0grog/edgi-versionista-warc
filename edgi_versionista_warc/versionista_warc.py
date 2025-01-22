@@ -12,7 +12,7 @@ from tqdm import tqdm
 from warcio import StatusAndHeaders
 from warcio.recordloader import ArcWarcRecord
 from .web_monitoring_db import Client as DbClient
-from .warctools import GIGABYTE, WarcSeries, status_text, create_metadata_record
+from .warctools import GIGABYTE, STANDARD_STATUS_MESSAGES, WarcSeries, status_text, create_metadata_record
 
 
 logger = logging.getLogger(__name__)
@@ -79,30 +79,102 @@ def load_response_body(version):
     return body_response.content
 
 
-def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecord]:
+def version_history(version: dict) -> list[str]:
+    if not version.get('history'):
+        history = [version['url']]
+        if version['source_metadata'].get('redirects'):
+            for redirect in version['source_metadata']['redirects']:
+                if not isinstance(redirect, str) or len(redirect) == 0:
+                    logger.warning(f'Version {version['uuid']} has null redirect')
+                elif not URL_LIKE.match(redirect):
+                    logger.warning(f'Version {version['uuid']} has non-URL redirect: "{redirect}"')
+                else:
+                    history.append(redirect)
+        elif version['source_metadata'].get('redirected_url'):
+            history.append(version['source_metadata']['redirected_url'])
+
+        version['history'] = history
+
+    return version['history']
+
+
+# Copy of heuristics from web-monitoring-db; used to guess approximate status
+# for pages when it's possible the server returned 200 for an error.
+# See: https://github.com/edgi-govdata-archiving/web-monitoring-db/blob/e5b6693102adc2fcec6c2b7fabe0d17c0c3ec4e7/app/models/version.rb#L203-L234
+def guess_version_status(version: dict) -> int:
+    if version['title']:
+        # Page titles are frequently formulated like "<title> | <site name>" or
+        # "<title> | <site section> | <site name>" (order may also be reversed).
+        # It's helpful to split up the sections and evaluate each independently.
+        for t in re.split(r'\s+(?:-+|\|)\s+', version['title'].lower()):
+            t = t.strip()
+
+            # We frequently see page titles that are just the code and the literal
+            # message from the standard, e.g. "501 Not Implemented".
+            if t in STANDARD_STATUS_MESSAGES:
+                return int(t.split(' ')[0])
+
+            # If the string is just "DDD", "error DDD", or "DDD error" and DDD
+            # starts with a 4 or 5, this is almost certainly just a status code.
+            code_match = re.match(r'^(?:error )?(4\d\d|5\d\d)(?: error)?$', t)
+            if code_match:
+                return int(code_match.group(1))
+
+            # Other more special messages we've seen.
+            if re.search(r'\b(page|file)( was)? not found\b', t):
+                return 404
+            if re.search(r'\baccess denied\b', t):
+                return 403
+            if re.search(r'\brestricted access\b', t):
+                return 403
+            if t == 'error':
+                return 500
+            if 'error processing ssi file' in t:
+                return 500
+            if 'error occurred' in t:
+                return 500
+            if re.search(r'\b(unexpected|server) error\b', t):
+                return 500
+            if re.search(r'\bsite under maintenance\b', t):
+                return 503
+
+    # Special case for the EPA "signpost" page, where they redirected hundreds
+    # of climate-related pages to instead of giving them 4xx status codes.
+    if version_history(version)[-1].endswith('epa.gov/sites/production/files/signpost/cc.html'):
+        return 404
+
+    return 200
+
+
+def create_version_records(warc: WarcSeries, version: dict, guess_status=False) -> list[ArcWarcRecord]:
     records = []
     version_id = version['uuid']
     capture_time = version["capture_time"]
 
-    if version['status'] is None:
-        raise MissingStatusCode(version_id)
-
     if version['body_url'] is None:
         raise MissingBodyError(version_id)
 
-    history = [version['url']]
-    if version['source_metadata'].get('redirects'):
-        for redirect in version['source_metadata']['redirects']:
-            if not isinstance(redirect, str) or len(redirect) == 0:
-                logger.warning(f'Version {version['uuid']} has null redirect')
-            elif not URL_LIKE.match(redirect):
-                logger.warning(f'Version {version['uuid']} has non-URL redirect: "{redirect}"')
-            else:
-                history.append(redirect)
+    history = version_history(version)
+    final_url = history[-1]
+    is_ftp = final_url.lower().startswith('ftp://')
+
+    fake_status = False
+    if version['status'] is None and not is_ftp:
+        fake_status = True
+        # Versionista used to not give us status codes for non-HTML responses;
+        # we are reasonably confident that if we got a non-HTML response, it was
+        # not an error response.
+        media = version['media_type']
+        if media and not re.search(r'[/+]x?html', media):
+            version['status'] = 200
+        elif guess_status:
+            version['status'] = guess_version_status(version)
+            logger.warning(f'Guessed status (version={version_id}, status={version['status']})')
+        else:
+            raise MissingStatusCode(version_id)
 
     first_record_id = None
     previous_url = None
-    final_url = history[-1]
     for index, url in enumerate(history):
         database_url = f'https://api.monitoring.envirodatagov.org/api/v0/versions/{version_id}'
         record_id = f'<{database_url}/responses/{index}>'
@@ -188,7 +260,8 @@ def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecor
                 'hopsFromSeed': 'R' * index,
                 # Standardized via Dublin Core:
                 'title': version['title'],
-                'source': database_url
+                'source': database_url,
+                'description': 'Status code is guessed from content' if fake_status else None
             }
         ))
 
@@ -205,7 +278,8 @@ def main(
     name='edgi-wm-versionista',
     gzip=True,
     warc_size=int(7.95 * GIGABYTE),
-    start_date: datetime | None = None
+    start_date: datetime | None = None,
+    guess_status: bool = False,
 ):
     limit = limit or 0
 
@@ -239,7 +313,7 @@ def main(
             progress_bar = tqdm(versions, unit=' versions', total=expected_records, disable=None)
             for version in progress_bar:
                 try:
-                    warc.write_records(create_version_records(warc, version))
+                    warc.write_records(create_version_records(warc, version, guess_status=guess_status))
                 except BadDataError as error:
                     logger.warning(str(error))
                     skipped[error.reason] += 1
