@@ -13,3 +13,4 @@ wheels/
 
 *.warc
 *.warc.gz
+out

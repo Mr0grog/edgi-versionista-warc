@@ -8,7 +8,7 @@ import logging
 import re
 from textwrap import dedent
 import httpx
-from tqdm.contrib.logging import tqdm_logging_redirect
+from tqdm import tqdm
 from warcio import StatusAndHeaders
 from warcio.recordloader import ArcWarcRecord
 from .web_monitoring_db import Client as DbClient
@@ -189,7 +189,7 @@ def create_version_records(warc: WarcSeries, version: dict) -> list[ArcWarcRecor
     return records
 
 
-def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 * GIGABYTE)):
+def main(*, start=0, limit=0, path='.', name='edgi-wm-versionista', gzip=True, warc_size=int(7.95 * GIGABYTE)):
     limit = limit or 0
 
     # The magic number here is the current count of Versionista records.
@@ -203,7 +203,7 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 
 
     skipped = Counter()
 
-    warc_builder = WarcSeries(name, gzip=gzip, size=warc_size, revisit_cache_size=100_000, info={
+    warc_builder = WarcSeries(path, name=name, gzip=gzip, size=warc_size, revisit_cache_size=100_000, info={
         'operator': '"Environmental Data & Governance Initiative" <contact@envirodatagov.org>',
         'description': dedent("""\
             Web content captured by EDGI's Web Monitoring project using
@@ -219,15 +219,15 @@ def main(*, start=0, limit=0, name='versionista', gzip=True, warc_size=int(7.95 
             if limit:
                 versions = islice(versions, start, limit)
 
-            with tqdm_logging_redirect(versions, unit=' versions', total=expected_records, disable=None) as progress_bar:
-                for version in progress_bar:
-                    try:
-                        warc.write_records(create_version_records(warc, version))
-                    except BadDataError as error:
-                        logger.warning(str(error))
-                        skipped[error.reason] += 1
-                    except Exception as error:
-                        raise RuntimeError(f'Error processing version {version.get("uuid")}: {error}') from error
+            progress_bar = tqdm(versions, unit=' versions', total=expected_records, disable=None)
+            for version in progress_bar:
+                try:
+                    warc.write_records(create_version_records(warc, version))
+                except BadDataError as error:
+                    logger.warning(str(error))
+                    skipped[error.reason] += 1
+                except Exception as error:
+                    raise RuntimeError(f'Error processing version {version.get("uuid")}: {error}') from error
 
         # FIXME: Add resource record with logs:
         # https://iipc.github.io/warc-specifications/guidelines/warc-implementation-guidelines/#use-of-resource-records-for-processing-information

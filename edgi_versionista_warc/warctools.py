@@ -64,7 +64,7 @@ class WarcSeries:
     fancier.
     """
 
-    def __init__(self, base_path, gzip=True, size=8 * GIGABYTE, info=None, revisit_cache_size=10_000):
+    def __init__(self, path, name='archive', gzip=True, size=8 * GIGABYTE, info=None, revisit_cache_size=10_000):
         self._file: BufferedWriter | None = None
         self._writer: WARCWriter | None = None
         self._created_names = Counter()
@@ -73,14 +73,8 @@ class WarcSeries:
         self.size: int = size
         self.gzip: bool = gzip
         self.warcinfo: dict = info or {}
-
-        path = Path(base_path)
-        if path.is_dir():
-            self.directory = path
-            self.file_base = 'archive'
-        else:
-            self.directory = path.parent
-            self.file_base = path.name
+        self.path: Path = Path(path)
+        self.base_name: str = name
 
     def close(self):
         self._close_writer()
@@ -129,7 +123,7 @@ class WarcSeries:
     def _create_writer(self, suffix='') -> WARCWriter:
         self._close_writer()
 
-        base_name = self.file_base + suffix
+        base_name = self.base_name + suffix
         self._created_names[base_name] += 1
         if self._created_names[base_name] > 1:
             base_name += f'-{self._created_names[base_name]}'
@@ -138,9 +132,9 @@ class WarcSeries:
         if self.gzip:
             file_name += '.gz'
 
-        logger.info(f'Creating WARC: "{self.directory / file_name}"')
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self._file = open(self.directory / file_name, 'wb')
+        logger.info(f'Creating WARC: "{self.path / file_name}"')
+        self.path.mkdir(parents=True, exist_ok=True)
+        self._file = open(self.path / file_name, 'wb')
         self._writer = WARCWriter(self._file, gzip=self.gzip, warc_version=WARC_VERSION)
 
         self._writer.write_record(self._writer.create_warcinfo_record(file_name, {
