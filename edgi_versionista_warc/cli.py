@@ -24,7 +24,7 @@ def cli() -> None:
     configuration = parser.parse_args()
 
     path = Path(configuration.path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=str(path / 'log.txt'), level=logging.WARNING)
     logging.getLogger(__name__.split('.')[0]).setLevel(logging.INFO)
 
