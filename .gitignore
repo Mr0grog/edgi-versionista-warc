@@ -6,10 +6,15 @@ dist/
 wheels/
 *.egg-info
 
+# IDEs/Editors
+.vscode
+
 # venv
 .venv
 
 .DS_Store
+
+scratch.*
 
 *.warc
 *.warc.gz
